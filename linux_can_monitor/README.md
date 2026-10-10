@@ -7,8 +7,8 @@
 **本文件是 I.MX 单端使用手册**：模块清单、编译、部署、命令行参数、数据写入策略、
 预期输出、数据库查询、单端排查、性能参考、板载基准。
 项目总览、GB/T 27930 报文对照表、STM32 端细节与两端合一的联调验证见
-[`../README_GB27930项目手册.md`](../README_GB27930项目手册.md)；
-STM32 端单独的手册见 [`../README_STM32_BMS模拟器.md`](../README_STM32_BMS模拟器.md)。
+[`../项目总使用手册.md`](../项目总使用手册.md)；
+STM32 端单独的手册见 [`../STM32_BMS模拟器使用手册.md`](../STM32_BMS模拟器使用手册.md)。
 
 ---
 
@@ -587,7 +587,7 @@ sudo ./can_monitor -i can0 --fb /dev/fb0 --touch /dev/input/event1
 **屏幕没显示或设备树没配**：先看 `cat /proc/fb`（有没有 framebuffer）与
 `cat /proc/bus/input/devices`（有没有触摸节点），两个都空才去查 overlay 配置。
 CAN 侧的设备树插件（`imx-fire-can1/can2.dtbo`）在项目总手册
-[`../README_GB27930项目手册.md`](../README_GB27930项目手册.md) 的
+[`../项目总使用手册.md`](../项目总使用手册.md) 的
 「六、联调验证步骤」步骤 0 里。
 
 ### 6. 界面链路自动化验证（不需要屏幕，也不需要触摸硬件）
@@ -829,7 +829,7 @@ make export        # 生成 export/can_raw.csv 与 export/charge_data.csv
 |  | `--touch-calib <xmin,xmax,ymin,ymax>` | 手动指定触摸原始量程；默认值 `0,474,0,272`（X 用 474，面板右边最后几列压不到） |
 
 本端按 GB/T 27930-2015 实现，报文口径与项目总手册
-[`../README_GB27930项目手册.md`](../README_GB27930项目手册.md) 的「三、报文对照表」一致：
+[`../项目总使用手册.md`](../项目总使用手册.md) 的「三、报文对照表」一致：
 **19 类国标报文 + 2 类 J1939 传输协议帧**（TP.CM / TP.DT）。
 
 `ui_usage()` 打印的帮助文本与上表一致，`--verbose`、`--no-gui`、`--auto-start` 都在其中。
@@ -842,7 +842,7 @@ make export        # 生成 export/can_raw.csv 与 export/charge_data.csv
 
 收发器无电、`接口 can0 不存在`、`operstate` 显示 `UNKNOWN`、永远不发 ACK、
 在线配置报 `Device or resource busy` 这几类原因的完整排查表见项目总手册
-[`../README_GB27930项目手册.md`](../README_GB27930项目手册.md) 的
+[`../项目总使用手册.md`](../项目总使用手册.md) 的
 「七、故障排查速查表」（7.1 错误帧日志解读 / 7.2 界面相关）。
 
 本端特有的排查项：
@@ -859,7 +859,7 @@ make export        # 生成 export/can_raw.csv 与 export/charge_data.csv
 ### 界面
 
 桌面（X11）抢触摸、屏幕闪回桌面这两类现象见项目总手册
-[`../README_GB27930项目手册.md`](../README_GB27930项目手册.md) 的 7.3 节
+[`../项目总使用手册.md`](../项目总使用手册.md) 的 7.3 节
 （本文件第三节第 5 小节也有同一条处置办法）。
 
 | 现象 | 原因 | 处理 |
@@ -889,7 +889,7 @@ make export        # 生成 export/can_raw.csv 与 export/charge_data.csv
 ## 九、联调验证步骤（配合 STM32 BMS 模拟器）
 
 两端连线的完整步骤见项目总手册
-[`../README_GB27930项目手册.md`](../README_GB27930项目手册.md) 的「六、联调验证步骤」。
+[`../项目总使用手册.md`](../项目总使用手册.md) 的「六、联调验证步骤」。
 
 本端参与其中几步，要点如下（命令与判据与总手册逐字一致）：
 
