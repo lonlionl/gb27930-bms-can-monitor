@@ -27,7 +27,12 @@
 
 ## 2. 目录约定
 
-- STM32 侧源码（`User/**`）里含中文的文件为 GBK 编码，Linux 侧源码（`linux_can_monitor/**`）与 `tools/` 下的脚本为 UTF-8；`to_gbk.py` 以 GBK + CRLF 作为它覆盖的 12 个文件的目标状态。
+- STM32 侧源码（`User/**`）**含中文的文件都是 GBK 编码**；Linux 侧源码（`linux_can_monitor/**`）与 `tools/` 下的脚本为 UTF-8。
+- 换行**不统一**：`to_gbk.py` 以 **GBK + CRLF** 作为它覆盖的那 12 个文件的目标状态。以 `User/` 下 24 个 `.c/.h` 计，
+  纯 CRLF 18 个、纯 LF 6 个（`bms_protocol.h`、`can.c`、`can.h`、`main.c`、`stm32f10x_it.c`、`User/Ui/font16.h`）。
+  编码与换行是两个独立维度：21 个文件含中文（GBK，其中 15 个是 CRLF、6 个仍是 LF；`to_gbk.py` 覆盖的
+  那 12 个里 11 个已收进 CRLF，只剩 `User/Ui/font16.h` 是 LF，见 3 节），
+  3 个是纯 ASCII + CRLF（`stm32f10x_conf.h`、`stm32f10x_it.h`、`bsp_led.h`）。
 - 点阵字库分两份：`User/Ui/font16.h`（GBK，Keil 工程）与 `linux_can_monitor/font16.h`（UTF-8），由 `gen_font.py` 的不同档位分别生成，两者不可互换。
 - 不进仓库的内容：`stm32_syntax.tar.gz`、`tools/_gbt_pages/`、`__pycache__/`、`_tmp_*`、`_tmp/`、`*.ppm`、`*.db`、`*.log`、`linux_can_monitor/build/` 等编译与运行产物。
 
@@ -44,8 +49,43 @@ python tools/to_gbk.py --check    # 只报告当前编码与换行，不改动�
 
 `--check` 逐文件打印编码名、CRLF 行数与纯 LF 行数，凡带 UTF-8 BOM、含纯 LF 行、编码不是 GBK 三者
 之一成立即返回 1。默认方向与 `--to-utf8` 把内容统一成 CRLF 后按目标编码写回并打印字节数变化，
-编码无法表示某字符时逐条列出并返回 1。`User/Ui/font16.h` 由 `gen_font.py` 的输出重定向生成，换行
-为 LF，`--check` 会列出它的纯 LF 行数并返回 1。
+编码无法表示某字符时逐条列出并返回 1。
+
+**当前实际读数：这 12 个文件里 11 个是 GBK + CRLF、报 `CRLF=n LF=0`，唯一的例外是
+`User/Ui/font16.h` —— 它是纯 LF（552 行），所以 `python tools/to_gbk.py --check` 现在返回 1：**
+
+```
+User/Ui/font16.h         GBK    CRLF=0    LF=552  <-- 含 552 个纯 LF
+```
+
+这不是有意保留的例外。`User/Ui/font16.h` 由 `gen_font.py` 的输出重定向生成，而仓库里现存的这一份
+是 `gen_font.py` 改成 CRLF 输出**之前**产出的旧产物，一直没有重新生成。要让 `--check` 返回 0，
+下面两种方式都可以，但改的东西不同：
+
+**方式 A —— 只改行尾（不动字模内容）**
+
+```bash
+python tools/to_gbk.py
+```
+
+`User/Ui/font16.h` 在这份工具的 12 个文件名单里，默认方向就是「UTF-8 -> GBK + CRLF」；它已经是
+GBK，所以只有那 552 行 LF 被换成 CRLF，字符数据一字不改，之后 `python tools/to_gbk.py --check`
+直接返回 0。不需要 Linux，也不需要字体。
+
+**方式 B —— 重新生成字库内容（行尾随之变成 CRLF）**
+
+```bash
+python3 tools/gen_font.py --profile stm32 --out-encoding gbk > User/Ui/font16.h
+```
+
+`gen_font.py` 现在输出 CRLF（见 5 节），所以重新生成的这一份也是 CRLF。这条路径重新生成**字模
+内容**，需要一台装了 Noto / DejaVu 字体的 Linux。
+
+两者的区别：A 只动行尾、不动字模，输出字节数只差那 552 个 `\r`；B 会按当前脚本文案重新生成字模
+内容，字号、字符集合或字模压缩逻辑变化时字节数会明显不同。
+
+在清零之前，`--check` 返回 1 是这份旧产物的已知现状，不是编码统一失败，其余 11 个文件的
+编码与换行都已到位。
 
 ## 4. 静态检查
 
@@ -93,10 +133,15 @@ python3 tools/gen_font.py --preview /tmp/p.png  # 另外输出一张放大预览
 ```
 
 `--profile stm32` 只扫 `User/Ui/ui_app.c` 与 `User/Ui/ui_app.h`，再补上 `UI_DYNAMIC_TEXT_STM32`
-列出的界面动态文案；`--profile linux` 扫 `linux_can_monitor/` 下会画到屏上的 13 个文件（`.c` 与
-`.h`）；不带
-`--profile` 等同 `all`，取两份扫描范围的并集；`--out-encoding gbk` 把标准输出切到 GBK，便于直接
+列出的界面动态文案；`--profile linux` 扫 `linux_can_monitor/` 下会画到屏上的 13 个文件（`.c` 与 `.h`）；
+不带 `--profile` 等同 `all`，取两份扫描范围的并集；`--out-encoding gbk` 把标准输出切到 GBK，便于直接
 重定向进 Keil 工程。
+
+写往标准输出的头文件正文一律以 **CRLF** 结束（脚本内 `ENDL`）：**重新生成**出来的 `font16.h` 因此与
+Keil 工程里其它源码的换行一致，`to_gbk.py --check` 也不会因纯 LF 行返回 1。注意这只对重新生成的文件
+成立 —— 仓库里现存的 `User/Ui/font16.h` 是改 `ENDL` 之前生成的，仍是纯 LF、`--check` 仍返回 1
+（读数见 3 节）。**行尾与字模内容是两个独立的问题**：只想把行尾改成 CRLF、不重新生成字模，走 3 节的
+方式 A（`python tools/to_gbk.py`），不需要字体。`--art` 是终端自检、不进头文件，仍按平台默认行尾输出。
 
 字模格式：16×16，每字 32 字节，每行 2 字节，最高位对应最左像素；ASCII 为 0x20~0x7E 共 95 个，只画
 左侧 8 列、绘制步进 8；汉字用满 16 列、绘制步进 16。`--profile stm32` 下 ASCII 字模压缩为每字
@@ -159,22 +204,29 @@ make -f tools/pc_ui/Makefile clean   # 清理 build/pcui_*.o 与 build/pc_ui
 ```bash
 sudo python3 tools/virtual_touch.py --create                   # 终端 A：常驻
 sudo ./can_monitor -i can0 --gui --no-touch-grab --touch-debug # 终端 B：界面
-sudo python3 tools/virtual_touch.py --tap <raw_x> <raw_y>      # 终端 C：注入一次点击
+sudo python3 tools/virtual_touch.py --tap 357 14               # 终端 C：点主界面「数据曲线」
 ```
 
-`--create` 创建屏幕并常驻到 Ctrl+C；`--tap X Y` 与 `--raw-tap X Y` 向管道写入一对数值（后者取另一
-组参数并改变打印标签）；`--name` 指定设备名（默认 `gb27930 virtual touch`）；`--raw-x-max` /
-`--raw-y-max` 指定原始量程上限（默认 34799 / 13064）；`--screen` 指定逻辑屏幕（默认 `480x272`）；
-`--raw-mode` 由 `--create` 内部固定启用，即管道里的数值直接当原始坐标。
+`--create` 创建屏幕并常驻到 Ctrl+C；`--name` 指定设备名（默认 `gb27930 virtual touch`）；
+`--raw-x-max` / `--raw-y-max` 指定原始量程上限（默认 34799 / 13064）；`--screen` 指定逻辑屏幕
+（默认 `480x272`），用于屏幕坐标到原始坐标的换算。
+
+`--tap X Y` 送**屏幕坐标**：先把屏幕坐标按上面那组量程换算成原始值，再把原始值写进管道；`--raw-tap
+X Y` 送**原始坐标**，只写入、不换算 —— 用来直接灌设备原始值，复现「内核上报量程与实际值不符」
+（野火板上那块 Goodix 内核声称 34799 x 13064、设备却按屏幕像素上报）。`--raw-mode` 配合 `--create`
+用，把管道里的数值一律当原始值 —— 管道是唯一输入通道，常驻进程无法知道写入方用的是哪一组参数，
+所以默认按屏幕坐标解释；确实要整条管道都灌原始值时用 `--raw-tap`，或在 `--create` 时加 `--raw-mode`。
 
 `--create` 打开 `/dev/uinput`，注册 `EV_SYN`、`EV_KEY`、`EV_ABS` 与 `BTN_TOUCH`、`ABS_X/Y`、
 `ABS_MT_SLOT`、`ABS_MT_POSITION_X/Y`、`ABS_MT_TRACKING_ID`，把 event 节点名写入
 `/tmp/virtual_touch.node`，然后阻塞读命名管道 `/tmp/virtual_touch.fifo`，每读到一对数值就发一组
 按下 + 抬起事件；结束时销毁设备并删除管道与节点文件。
 
-坐标换算由 `can_monitor` 的 `map_axis()` 完成：`round(raw / raw_max × (屏幕边长 − 1))`，故屏幕像素
-`sx` 对应的原始值为 `round(sx × 34799 / 479)`，`sy` 对应 `round(sy × 13064 / 271)`。`--tap` 与
-`--raw-tap` 送入的数值都按原始坐标处理，`--screen` 只在非原始模式下参与换算；运行要求 root 权限、存在
+坐标换算与 `can_monitor` 的 `map_axis()` 同一套线性映射：`round(sx × raw_max / (屏幕边长 − 1))`，
+故屏幕像素 `sx` 对应的原始值为 `round(sx × 34799 / 479)`，`sy` 对应 `round(sy × 13064 / 271)`。
+标题栏按钮中心的取值：主界面「数据曲线」屏幕 (357,14) → 原始 (25936,675)，「充电」(439,14) →
+(31893,675)，数据曲线页「历史」(366,14) → (26590,675)、「返回」(439,14) → (31893,675)
+（按钮矩形取自 `linux_can_monitor/gui.c` 的 `gui_button_rect()`）。运行要求 root 权限、存在
 `/dev/uinput`（`sudo modprobe uinput`）与 Python 3。
 
 ## 7. 部署与板上基准

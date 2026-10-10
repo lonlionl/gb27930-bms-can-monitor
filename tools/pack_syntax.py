@@ -7,9 +7,18 @@ STM32 的代码在 PC 上没法真正编译（没有 ARM 工具链），但可�
 x86 上的 gcc 做一次「-fsyntax-only」检查：类型、函数原型、变量作用域、
 C89 声明位置这些问题都能提前抓出来，比在 Keil 里反复 Build 快得多。
 
-本脚本把 CMSIS 头、标准外设库头、User 下的源码，以及 tools/stub 里的
-lcd.h/touch.h 桩文件一起打成 tar.gz；虚拟机拉过去解包后执行
+本脚本把 CMSIS 头、标准外设库头、User 下的源码，以及语法检查要用的
+tools/syntax_check.mk 一起打成 tar.gz；虚拟机拉过去解包后执行
 make -f tools/syntax_check.mk 即可。
+
+包内路径与仓库一致，头文件全部取真实源码：
+  · Libraries/CMSIS                                  —— stm32f10x.h / core_cm3.h 等
+  · Libraries/STM32F10x_StdPeriph_Driver/inc         —— 标准外设库头
+  · User/**                                          —— STM32 侧源码（GBK）
+  · tools/syntax_check.mk                            —— 检查规则本身
+仓库里没有桩头文件：User/Lcd/lcd.h 与 User/Lcd/touch.h 就是检查时用的头。
+唯一的替换是 User/Ui/font16.h —— 它被 EXCLUDE 排除，改放
+linux_can_monitor/font16.h（同一份字库的 UTF-8 版本）到同一路径，理由见下方注释。
 
 用法:
     python tools/pack_syntax.py

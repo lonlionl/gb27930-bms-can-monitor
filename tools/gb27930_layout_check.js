@@ -2,16 +2,23 @@
 /**
  * GB/T 27930-2015 字段布局交叉校验（静态验证，不需要编译器 / CAN 硬件）
  *
- * 背景：这次要保证**四处**的字段偏移 / 分辨率 / 偏移量 / 枚举值完全一致：
- *   A. tools/GB_T_27930_报文格式定义.md   —— 标准原文（人工核对基准）
- *   B. User/Bms/bms_protocol.c            —— STM32 侧（**GBK** 编码）
- *   C. linux_can_monitor/gb27930.c        —— i.MX 侧（UTF-8）
- *   D. linux_can_monitor/fake_bms.py      —— 测试用 BMS 模拟器
+ * 比对对象是**两份 C 实现**：
+ *   A. User/Bms/bms_protocol.c + .h      —— STM32 侧（**GBK** 编码，用 TextDecoder('gbk') 读）
+ *   B. linux_can_monitor/gb27930.c + .h  —— i.MX 侧（UTF-8）
+ *
+ * 参考值的来源：
+ *   · tools/GB_T_27930_报文格式定义.md —— 逐报文字段定义（人工核读标准扫描件整理），
+ *     脚本按它的换算参数生成"参考载荷"，再与 A / B 的实际组包逐字节比对；
+ *   · linux_can_monitor/fake_bms.py    —— BMS 侧模拟器（Python），**不作为解析对象**：
+ *     它的 BCS 构造与两端 C 实现是同一套算法，脚本内联了一份等价实现
+ *     （下面的 fakeBcs()）与 A 的组包结果逐字节比对，用来印证"标准参考载荷 /
+ *     Python 模拟器 / C 实现"三方一致；该文件本身不被读取。
  *
  * 本脚本做三件事：
- *   [1] 从 B / C 两个 C 源码抽取报文偏移与长度宏，逐条比对是否相同
+ *   [1] 从 A / B 两个 C 源码抽取报文偏移与长度宏，逐条比对是否相同
  *   [2] 按标准原文的换算参数生成"参考载荷"，与两端实际组包/解析的字节比对
  *   [3] 抽查分辨率常量与枚举值，并反向检查"应当已删除的旧字段"
+ * 后面还接两节：编译单元归属检查、printf 格式串里的非法 % 转换。
  *
  * 用法（Windows 上 python 被沙箱拦住时可跑这个）：
  *     node tools/gb27930_layout_check.js
@@ -20,7 +27,7 @@
  * 附带工具：
  *     pwsh -File tools/gbk2utf8.ps1 -Mode export   # User/**（GBK）-> .gbk_utf8/**
  *     pwsh -File tools/gbk2utf8.ps1 -Mode import   # .gbk_utf8/** -> User/**（写回 GBK）
- *   User/ 下全是 GBK 编码的源码，直接读写容易把中文注释弄乱，用这个镜像来回转。
+ *   User/ 下含中文的源文件都是 GBK 编码，直接读写容易把中文注释弄乱，用这个镜像来回转。
  */
 
 const fs = require('fs');

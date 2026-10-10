@@ -18,6 +18,17 @@ gen_font.py —— 生成嵌入式 UI 用的点阵字库头文件
     python3 gen_font.py > font16.h          # 生成字库头文件
     python3 gen_font.py --preview a.png     # 额外输出放大预览图
     python3 gen_font.py --art "电压0125."   # 终端里打印 ASCII 艺术字（自检用）
+
+标准输出一律是 CRLF 换行（见 ENDL），这样重定向出来的 font16.h 与 Keil 工程里
+其它源码的换行一致，tools/to_gbk.py --check 不会因为纯 LF 行报错。
+
+  注意：这只对「重新生成」出来的文件成立。仓库里现存的 User/Ui/font16.h 是本脚本
+  改成 CRLF 输出之前生成的旧产物，仍是纯 LF（552 行），所以 to_gbk.py --check
+  现在仍然返回 1。
+
+  行尾与字模内容是两件独立的事：只想把仓库里这一份改成 CRLF、不重新渲染字模，
+  直接跑 python tools/to_gbk.py（它覆盖 User/Ui/font16.h，默认方向就是
+  UTF-8 -> GBK + CRLF），不需要字体、也不需要 Linux；本脚本解决的是字模内容。
 """
 
 import os
@@ -29,6 +40,29 @@ try:
 except ImportError:
     sys.stderr.write("需要 Pillow: sudo apt-get install -y python3-pil\n")
     sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# 输出行尾
+#
+#   生成的头文件要落进 Keil 工程，而工程里其它源码都是 CRLF（tools/to_gbk.py
+#   的目标状态）。标准输出的默认行尾取决于平台与重定向方式，靠不住，所以这里
+#   显式指定：主程序把函数内的 print 换成 _emit()，每一行都以 CRLF 结束。
+#
+#   为什么不能只靠流层的换行翻译：--out-encoding 分支用
+#   TextIOWrapper(..., newline="") 接住原始字节（为了让 \r\n 原样落盘），
+#   这种情况下流层不做任何翻译，print 的 \n 会原样写成 LF。
+# ---------------------------------------------------------------------------
+ENDL = "\r\n"
+
+# 先把内置 print 抓住：main() 里会把本模块的 print 换成 _emit，
+# _emit 内部必须用这个原始引用，否则会自己调自己。
+_builtin_print = print
+
+
+def _emit(*parts, **kw):
+    """按 CRLF 结束一行（代替内置 print；sep 仍可传）"""
+    kw["end"] = ENDL
+    return _builtin_print(*parts, **kw)
 
 # ---------------------------------------------------------------------------
 # 仓库根目录（本脚本位于 <repo>/tools/gen_font.py）
@@ -588,234 +622,257 @@ def main():
     # 用 --out-encoding gbk 就能直接落盘成 Keil 认的编码，
     # 不用再在 PC 上手工转一道 UTF-8 -> GBK。
     #   python3 tools/gen_font.py --profile stm32 --out-encoding gbk > User/Ui/font16.h
+    saved_stdout = None
     if "--out-encoding" in argv:
         enc = argv[argv.index("--out-encoding") + 1]
         # 注意：不能用 sys.stdout.reconfigure() —— 那是 Python 3.7 才有的，
         # 而虚拟机（Ubuntu 18.04）上是 Python 3.6.9。用 TextIOWrapper 包一层，
-        # 3.6 / 3.7+ 都能跑。newline="" 让 print 出来的 \r\n 原样落盘。
+        # 3.6 / 3.7+ 都能跑。newline="" 关掉流层的换行翻译，
+        # 落盘的行尾完全由 _emit() 的 ENDL 决定。
         try:
-            sys.stdout = io.TextIOWrapper(sys.stdout.buffer,
+            # 先把原有 TextIOWrapper 摘掉再包，并留一个引用到 finally 里还回去：
+            # 被摘掉的那个包装器一旦被回收就会关掉底层 buffer，
+            # 新的包装器（以及调用方如 tee 对旧 sys.stdout 的引用）就写不进去了。
+            saved_stdout = sys.stdout
+            sys.stdout = io.TextIOWrapper(saved_stdout.detach(),
                                           encoding=enc, newline="")
         except (LookupError, AttributeError, ValueError) as exc:
             sys.stderr.write("无法把输出切到 %s: %s\n" % (enc, exc))
             return 2
         sys.stderr.write("输出编码: %s\n" % enc)
-    path, fidx = open_cjk_font()
-    cjk_font = ImageFont.truetype(path, CJK_PX, index=fidx)
-    asc_font, asc_ref_top = pick_ascii_font(ASC_W, CELL)
 
-    # ---- 按平台选择要扫描的文件集 ----
-    #   --profile stm32  → 只收 STM32 界面真正会画出来的字（省 Flash）
-    #   --profile linux  → 只收 Linux framebuffer 界面的字
-    #   不给就全都要（两端通用的字库）
-    global SCAN_FILES
-    profile = "all"
-    if "--profile" in argv:
-        profile = argv[argv.index("--profile") + 1]
-        if profile not in PROFILES:
-            sys.stderr.write("未知的 profile: %s（可选: %s）\n"
-                             % (profile, ", ".join(PROFILES.keys())))
-            return 2
-        SCAN_FILES = PROFILES[profile]
-    sys.stderr.write("字库档位: %s（扫描 %d 个文件）\n" % (profile, len(SCAN_FILES)))
+    try:
+        # 本函数（含它调用的 emit_c_array）是唯一向标准输出写头文件正文的地方，
+        # 这里把 print 换成按 CRLF 结束的 _emit，行尾就不会随平台或重定向方式变化。
+        # dump_art() 是终端自检、不进头文件，仍用内置 print。
+        global print
+        print = _emit
 
-    # ---- 终端自检：打印 ASCII 艺术字 ----
-    if "--art" in argv:
-        dump_art(argv[argv.index("--art") + 1], cjk_font, asc_font, asc_ref_top)
-        return
+        path, fidx = open_cjk_font()
+        cjk_font = ImageFont.truetype(path, CJK_PX, index=fidx)
+        asc_font, asc_ref_top = pick_ascii_font(ASC_W, CELL)
 
-    # ---- 预览图 ----
-    if "--preview" in argv:
-        emit_preview(argv[argv.index("--preview") + 1], cjk_font, asc_font, asc_ref_top, [
-            "国标充电监控终端",
-            "电压 512.3 V  电流 98.7 A",
-            "荷电状态 62.5 %  温度 38 C",
-            "历史曲线  返回  实时监控",
-            "空闲 握手 辨识 参数配置",
-            "准备 充电中 结束 故障 异常",
-            "0123456789 ABCDEFabcdef .:-/%#",
-        ])
+        # ---- 按平台选择要扫描的文件集 ----
+        #   --profile stm32  → 只收 STM32 界面真正会画出来的字（省 Flash）
+        #   --profile linux  → 只收 Linux framebuffer 界面的字
+        #   不给就全都要（两端通用的字库）
+        global SCAN_FILES
+        profile = "all"
+        if "--profile" in argv:
+            profile = argv[argv.index("--profile") + 1]
+            if profile not in PROFILES:
+                sys.stderr.write("未知的 profile: %s（可选: %s）\n"
+                                 % (profile, ", ".join(PROFILES.keys())))
+                return 2
+            SCAN_FILES = PROFILES[profile]
+        sys.stderr.write("字库档位: %s（扫描 %d 个文件）\n" % (profile, len(SCAN_FILES)))
 
-    # ---- 字符集：以「源码扫描」为准 ----
-    #   早期版本用一张手工维护的 CJK_TEXT 表兜底，但它会把大量**用不到**的字
-    #   也塞进字库。STM32 那边一个字模 32 字节，而 Keil MDK-Lite 只给 32 KB
-    #   总额度，浪费不起 —— 实测把 CJK_TEXT 去掉后字库能小掉三分之一。
-    #   扫描已经足够可靠，而且还有 uitest / pc_ui 两道缺字检查兜着，
-    #   所以默认只用扫描结果；万一扫描没扫到任何字（路径不对之类），
-    #   再退回 CJK_TEXT，避免生成一个空字库把屏画成一片空白。
-    scanned_all = scan_cjk()
-    # STM32 档位补上「协议层提供、但会显示在屏上」的那些字（见上方说明）
-    if profile == "stm32":
-        have = set(scanned_all)
-        added = 0
-        for ch in UI_DYNAMIC_TEXT_STM32:
-            # ASCII 必须跳过！95 个 ASCII 字模本来就一直在字库里，
-            # 早期这里没判断，把 "IDLE" 里的 I/D/L/E 也当汉字塞进了
-            # 16x16 表 —— 每个白占 32 字节字模 + 4 字节映射表。
-            if ord(ch) < 0x80:
-                continue
-            if ch not in have:
-                have.add(ch)
-                scanned_all.append(ch)
-                added += 1
-        sys.stderr.write("补充界面动态文案字符: %d 个（状态名/异常短名）\n" % added)
+        # ---- 终端自检：打印 ASCII 艺术字 ----
+        if "--art" in argv:
+            dump_art(argv[argv.index("--art") + 1], cjk_font, asc_font, asc_ref_top)
+            return
 
-    if scanned_all:
-        source_chars = scanned_all
-        sys.stderr.write("字符集来源: 源码扫描（%d 个汉字/全角符号）\n"
-                         % len(scanned_all))
-    else:
-        source_chars = sorted(set(CJK_TEXT))
-        sys.stderr.write("警告: 源码扫描没有任何结果，退回手工 CJK_TEXT 表（%d 个字）\n"
-                         % len(source_chars))
-        sys.stderr.write("      请检查 SCAN_FILES 里的路径是否能解析到（在仓库根目录跑本脚本）\n")
+        # ---- 预览图 ----
+        if "--preview" in argv:
+            emit_preview(argv[argv.index("--preview") + 1], cjk_font, asc_font, asc_ref_top, [
+                "国标充电监控终端",
+                "电压 512.3 V  电流 98.7 A",
+                "荷电状态 62.5 %  温度 38 C",
+                "历史曲线  返回  实时监控",
+                "空闲 握手 辨识 参数配置",
+                "准备 充电中 结束 故障 异常",
+                "0123456789 ABCDEFabcdef .:-/%#",
+            ])
 
-    seen = set()
-    cjk = []
-    for ch in source_chars:
-        if ch not in seen:
-            seen.add(ch)
-            cjk.append(ch)
+        # ---- 字符集：以「源码扫描」为准 ----
+        #   早期版本用一张手工维护的 CJK_TEXT 表兜底，但它会把大量**用不到**的字
+        #   也塞进字库。STM32 那边一个字模 32 字节，而 Keil MDK-Lite 只给 32 KB
+        #   总额度，浪费不起 —— 实测把 CJK_TEXT 去掉后字库能小掉三分之一。
+        #   扫描已经足够可靠，而且还有 uitest / pc_ui 两道缺字检查兜着，
+        #   所以默认只用扫描结果；万一扫描没扫到任何字（路径不对之类），
+        #   再退回 CJK_TEXT，避免生成一个空字库把屏画成一片空白。
+        scanned_all = scan_cjk()
+        # STM32 档位补上「协议层提供、但会显示在屏上」的那些字（见上方说明）
+        if profile == "stm32":
+            have = set(scanned_all)
+            added = 0
+            for ch in UI_DYNAMIC_TEXT_STM32:
+                # ASCII 必须跳过！95 个 ASCII 字模本来就一直在字库里，
+                # 早期这里没判断，把 "IDLE" 里的 I/D/L/E 也当汉字塞进了
+                # 16x16 表 —— 每个白占 32 字节字模 + 4 字节映射表。
+                if ord(ch) < 0x80:
+                    continue
+                if ch not in have:
+                    have.add(ch)
+                    scanned_all.append(ch)
+                    added += 1
+            sys.stderr.write("补充界面动态文案字符: %d 个（状态名/异常短名）\n" % added)
 
-    # ---- 组装字模 ----
-    #   STM32 档位：ASCII 压缩成 16 字节/字；其余档位保持 32 字节/字不变。
-    pack_ascii = (profile == "stm32")
-    asc_rowbytes = 1 if pack_ascii else ROWS
-    global PACK_ASCII_ART
-    PACK_ASCII_ART = pack_ascii
-
-    glyphs = []
-    for code in range(0x20, 0x7F):
-        img = render_ascii(chr(code), asc_font, ASC_W, CELL, asc_ref_top)
-        if pack_ascii:
-            glyphs.extend(pack_ascii_packed(img))
+        if scanned_all:
+            source_chars = scanned_all
+            sys.stderr.write("字符集来源: 源码扫描（%d 个汉字/全角符号）\n"
+                             % len(scanned_all))
         else:
-            glyphs.extend(pack(img, ASC_W, CELL))
-    ascii_count = 0x7F - 0x20
-    #   cjk_base  = 汉字字模在 g_font_data 里的起始字节偏移
-    #   cjk_start = 写进映射表的 index（压缩格式下相对汉字块，传统格式下是绝对下标）
-    # cjk_base = ASCII 字模块**实际占用的字节数**。
-    #
-    #   千万不能写成 ascii_count * asc_rowbytes —— 那是"每行字节数"不是"每字字节数"。
-    #   压缩格式下 asc_rowbytes=1、CELL=16，那么算出来只有 95，
-    #   而 ASCII 块实际占 95*16 = 1520 字节。偏移少了 1425 字节，
-    #   每个汉字都从错误的位置取字模，屏幕上就是一片"被打碎的乱码"。
-    #   这里直接用已生成数组的长度，从根上杜绝算错。
-    cjk_base  = len(glyphs) if pack_ascii else 0
-    cjk_start = 0 if pack_ascii else ascii_count
+            source_chars = sorted(set(CJK_TEXT))
+            sys.stderr.write("警告: 源码扫描没有任何结果，退回手工 CJK_TEXT 表（%d 个字）\n"
+                             % len(source_chars))
+            sys.stderr.write("      请检查 SCAN_FILES 里的路径是否能解析到（在仓库根目录跑本脚本）\n")
 
-    # 再兜一道：ASCII 块大小必须和宏定义一致
-    assert cjk_base == (ascii_count * asc_rowbytes * CELL if pack_ascii else 0), \
-        "ASCII 字模块大小自检失败"
+        seen = set()
+        cjk = []
+        for ch in source_chars:
+            if ch not in seen:
+                seen.add(ch)
+                cjk.append(ch)
 
-    missing = []
-    for ch in cjk:
-        img = render_cjk(ch, cjk_font)
-        if img.getbbox() is None:
-            missing.append(ch)
-        glyphs.extend(pack(img, CELL, CELL))
-    if missing:
-        sys.stderr.write("警告: 这些字符渲染为空，字体可能缺字: %s\n" % "".join(missing))
+        # ---- 组装字模 ----
+        #   STM32 档位：ASCII 压缩成 16 字节/字；其余档位保持 32 字节/字不变。
+        pack_ascii = (profile == "stm32")
+        asc_rowbytes = 1 if pack_ascii else ROWS
+        global PACK_ASCII_ART
+        PACK_ASCII_ART = pack_ascii
 
-    # ---- 输出头文件 ----
-    print("/**")
-    print("  ******************************************************************************")
-    print("  * @file    font16.h")
-    print("  * @brief   %dx%d 点阵字库（由 tools/gen_font.py 自动生成，请勿手工修改）" % (CELL, CELL))
-    print("  *")
-    print("  * 生成字体: %s" % path)
-    print("  *")
-    print("  * 字模格式:")
-    print("  *   · 每字模 %d 行，每行 %d 字节，共 %d 字节，MSB 对应最左像素"
-          % (CELL, ROWS, GLYPH_BYTES))
-    print("  *   · ASCII 0x20~0x7E 共 %d 个：宽 %d 像素，每行 %d 字节，共 %d 字节"
-          % (ascii_count, ASC_W, asc_rowbytes, asc_rowbytes * CELL))
-    print("  *   · 汉字共 %d 个：用满 %d 位，绘制步进 %d" % (len(cjk), CELL, CELL))
-    print("  ******************************************************************************")
-    print("  */")
-    print()
-    print("#ifndef __FONT16_H")
-    print("#define __FONT16_H")
-    print()
-    print("#include <stdint.h>")
-    print()
-    print("#define FONT_ASCII_FIRST    0x20u")
-    print("#define FONT_ASCII_LAST     0x7Eu")
-    print("#define FONT_ASCII_COUNT    %du" % ascii_count)
-    print("#define FONT_CJK_COUNT      %du" % len(cjk))
-    print("#define FONT_CELL           %du" % CELL)
-    print("#define FONT_ASC_WIDTH      %du" % ASC_W)
-    print("#define FONT_ROWS           %du" % ROWS)
-    print("#define FONT_GLYPH_BYTES    %du" % GLYPH_BYTES)
-    print("#define FONT_ASC_BYTES      %du" % (asc_rowbytes * CELL))
-    print("#define FONT_ASC_ROWBYTES   %du" % asc_rowbytes)
-    print("#define FONT_CJK_BASE       %du" % cjk_base)
-    print()
-    print("/* 取字模的统一切入口：消费端不要自己算字节偏移，")
-    print("   这样 ASCII 压缩与否对上层是透明的。 */")
-    print("#define FONT_ASC_GLYPH(n)   (&g_font_data[(uint32_t)(n) * FONT_ASC_BYTES])")
-    print("#define FONT_CJK_GLYPH(i)   (&g_font_data[FONT_CJK_BASE + (uint32_t)(i) * FONT_GLYPH_BYTES])")
-    print()
-    print("/** 汉字 -> 字模下标 映射项 */")
-    print("typedef struct")
-    print("{")
-    print("    uint32_t    codepoint;   /* Unicode 码点 */")
-    print("    uint16_t    index;       /* 字模数组下标 */")
-    print("} font_map_t;")
-    print()
-    print("/** 全部字模（ASCII 在前，汉字在后，每字 FONT_GLYPH_BYTES 字节） */")
-    emit_c_array("g_font_data", glyphs)
-    print("/** 汉字映射表 */")
-    print("static const font_map_t g_font_cjk_map[FONT_CJK_COUNT] = {")
-    for i, ch in enumerate(cjk):
-        print("    { 0x%04X, %d },   /* %s */" % (ord(ch), cjk_start + i, c_escape(ch)))
-    print("};")
-    print()
+        glyphs = []
+        for code in range(0x20, 0x7F):
+            img = render_ascii(chr(code), asc_font, ASC_W, CELL, asc_ref_top)
+            if pack_ascii:
+                glyphs.extend(pack_ascii_packed(img))
+            else:
+                glyphs.extend(pack(img, ASC_W, CELL))
+        ascii_count = 0x7F - 0x20
+        #   cjk_base  = 汉字字模在 g_font_data 里的起始字节偏移
+        #   cjk_start = 写进映射表的 index（压缩格式下相对汉字块，传统格式下是绝对下标）
+        # cjk_base = ASCII 字模块**实际占用的字节数**。
+        #
+        #   千万不能写成 ascii_count * asc_rowbytes —— 那是"每行字节数"不是"每字字节数"。
+        #   压缩格式下 asc_rowbytes=1、CELL=16，那么算出来只有 95，
+        #   而 ASCII 块实际占 95*16 = 1520 字节。偏移少了 1425 字节，
+        #   每个汉字都从错误的位置取字模，屏幕上就是一片"被打碎的乱码"。
+        #   这里直接用已生成数组的长度，从根上杜绝算错。
+        cjk_base  = len(glyphs) if pack_ascii else 0
+        cjk_start = 0 if pack_ascii else ascii_count
 
-    # -------------------------------------------------------------------
-    # GBK 映射表（STM32 端专用，可选）
-    #
-    #   为什么需要它：Linux 端源码是 UTF-8，直接按 Unicode 码点查表即可；
-    #   但 STM32 的 Keil 工程历史上一直是 GBK 编码，字符串字面量里躺的是
-    #   GBK 双字节码。与其在单片机上加一张巨大的「GBK -> Unicode」转换表，
-    #   不如反过来——由 PC 在生成字库时就把每个字的 GBK 码算出来，
-    #   单片机只做「读两个字节 -> 查表 -> 得到字模下标」，零额外开销。
-    #
-    #   用 #ifdef 包起来，Linux 端不定义 FONT_WITH_GBK_MAP 就不会占用空间。
-    # -------------------------------------------------------------------
-    gbk_items = []
-    for i, ch in enumerate(cjk):
-        try:
-            b = ch.encode("gbk")
-        except UnicodeEncodeError:
-            continue
-        if len(b) != 2:
-            continue
-        gbk_items.append(((b[0] << 8) | b[1], cjk_start + i))
-    gbk_items.sort(key=lambda kv: kv[0])
+        # 再兜一道：ASCII 块大小必须和宏定义一致
+        assert cjk_base == (ascii_count * asc_rowbytes * CELL if pack_ascii else 0), \
+            "ASCII 字模块大小自检失败"
 
-    print("#ifdef FONT_WITH_GBK_MAP")
-    print("/** GBK 双字节码 -> 字模下标 映射项（STM32 端用，按 gbk 升序可二分查找） */")
-    print("typedef struct")
-    print("{")
-    print("    uint16_t    gbk;         /* GBK 双字节码，高字节在前 */")
-    print("    uint16_t    index;       /* 字模数组下标 */")
-    print("} font_gbk_map_t;")
-    print()
-    print("#define FONT_GBK_COUNT  %du" % len(gbk_items))
-    print()
-    print("static const font_gbk_map_t g_font_gbk_map[FONT_GBK_COUNT] = {")
-    for code, idx in gbk_items:
-        print("    { 0x%04X, %d }," % (code, idx))
-    print("};")
-    print("#endif /* FONT_WITH_GBK_MAP */")
-    print()
-    print("#endif /* __FONT16_H */")
+        missing = []
+        for ch in cjk:
+            img = render_cjk(ch, cjk_font)
+            if img.getbbox() is None:
+                missing.append(ch)
+            glyphs.extend(pack(img, CELL, CELL))
+        if missing:
+            sys.stderr.write("警告: 这些字符渲染为空，字体可能缺字: %s\n" % "".join(missing))
 
-    sys.stderr.write("完成: ASCII %d 个 + 汉字 %d 个 = %d 个字模, 共 %d 字节\n"
-                     % (ascii_count, len(cjk), ascii_count + len(cjk), len(glyphs)))
-    sys.stderr.write("GBK 映射表: %d 项\n" % len(gbk_items))
+        # ---- 输出头文件 ----
+        print("/**")
+        print("  ******************************************************************************")
+        print("  * @file    font16.h")
+        print("  * @brief   %dx%d 点阵字库（由 tools/gen_font.py 自动生成，请勿手工修改）" % (CELL, CELL))
+        print("  *")
+        print("  * 生成字体: %s" % path)
+        print("  *")
+        print("  * 字模格式:")
+        print("  *   · 每字模 %d 行，每行 %d 字节，共 %d 字节，MSB 对应最左像素"
+              % (CELL, ROWS, GLYPH_BYTES))
+        print("  *   · ASCII 0x20~0x7E 共 %d 个：宽 %d 像素，每行 %d 字节，共 %d 字节"
+              % (ascii_count, ASC_W, asc_rowbytes, asc_rowbytes * CELL))
+        print("  *   · 汉字共 %d 个：用满 %d 位，绘制步进 %d" % (len(cjk), CELL, CELL))
+        print("  ******************************************************************************")
+        print("  */")
+        print()
+        print("#ifndef __FONT16_H")
+        print("#define __FONT16_H")
+        print()
+        print("#include <stdint.h>")
+        print()
+        print("#define FONT_ASCII_FIRST    0x20u")
+        print("#define FONT_ASCII_LAST     0x7Eu")
+        print("#define FONT_ASCII_COUNT    %du" % ascii_count)
+        print("#define FONT_CJK_COUNT      %du" % len(cjk))
+        print("#define FONT_CELL           %du" % CELL)
+        print("#define FONT_ASC_WIDTH      %du" % ASC_W)
+        print("#define FONT_ROWS           %du" % ROWS)
+        print("#define FONT_GLYPH_BYTES    %du" % GLYPH_BYTES)
+        print("#define FONT_ASC_BYTES      %du" % (asc_rowbytes * CELL))
+        print("#define FONT_ASC_ROWBYTES   %du" % asc_rowbytes)
+        print("#define FONT_CJK_BASE       %du" % cjk_base)
+        print()
+        print("/* 取字模的统一切入口：消费端不要自己算字节偏移，")
+        print("   这样 ASCII 压缩与否对上层是透明的。 */")
+        print("#define FONT_ASC_GLYPH(n)   (&g_font_data[(uint32_t)(n) * FONT_ASC_BYTES])")
+        print("#define FONT_CJK_GLYPH(i)   (&g_font_data[FONT_CJK_BASE + (uint32_t)(i) * FONT_GLYPH_BYTES])")
+        print()
+        print("/** 汉字 -> 字模下标 映射项 */")
+        print("typedef struct")
+        print("{")
+        print("    uint32_t    codepoint;   /* Unicode 码点 */")
+        print("    uint16_t    index;       /* 字模数组下标 */")
+        print("} font_map_t;")
+        print()
+        print("/** 全部字模（ASCII 在前，汉字在后，每字 FONT_GLYPH_BYTES 字节） */")
+        emit_c_array("g_font_data", glyphs)
+        print("/** 汉字映射表 */")
+        print("static const font_map_t g_font_cjk_map[FONT_CJK_COUNT] = {")
+        for i, ch in enumerate(cjk):
+            print("    { 0x%04X, %d },   /* %s */" % (ord(ch), cjk_start + i, c_escape(ch)))
+        print("};")
+        print()
 
+        # -------------------------------------------------------------------
+        # GBK 映射表（STM32 端专用，可选）
+        #
+        #   为什么需要它：Linux 端源码是 UTF-8，直接按 Unicode 码点查表即可；
+        #   但 STM32 的 Keil 工程历史上一直是 GBK 编码，字符串字面量里躺的是
+        #   GBK 双字节码。与其在单片机上加一张巨大的「GBK -> Unicode」转换表，
+        #   不如反过来——由 PC 在生成字库时就把每个字的 GBK 码算出来，
+        #   单片机只做「读两个字节 -> 查表 -> 得到字模下标」，零额外开销。
+        #
+        #   用 #ifdef 包起来，Linux 端不定义 FONT_WITH_GBK_MAP 就不会占用空间。
+        # -------------------------------------------------------------------
+        gbk_items = []
+        for i, ch in enumerate(cjk):
+            try:
+                b = ch.encode("gbk")
+            except UnicodeEncodeError:
+                continue
+            if len(b) != 2:
+                continue
+            gbk_items.append(((b[0] << 8) | b[1], cjk_start + i))
+        gbk_items.sort(key=lambda kv: kv[0])
+
+        print("#ifdef FONT_WITH_GBK_MAP")
+        print("/** GBK 双字节码 -> 字模下标 映射项（STM32 端用，按 gbk 升序可二分查找） */")
+        print("typedef struct")
+        print("{")
+        print("    uint16_t    gbk;         /* GBK 双字节码，高字节在前 */")
+        print("    uint16_t    index;       /* 字模数组下标 */")
+        print("} font_gbk_map_t;")
+        print()
+        print("#define FONT_GBK_COUNT  %du" % len(gbk_items))
+        print()
+        print("static const font_gbk_map_t g_font_gbk_map[FONT_GBK_COUNT] = {")
+        for code, idx in gbk_items:
+            print("    { 0x%04X, %d }," % (code, idx))
+        print("};")
+        print("#endif /* FONT_WITH_GBK_MAP */")
+        print()
+        print("#endif /* __FONT16_H */")
+
+        sys.stderr.write("完成: ASCII %d 个 + 汉字 %d 个 = %d 个字模, 共 %d 字节\n"
+                         % (ascii_count, len(cjk), ascii_count + len(cjk), len(glyphs)))
+        sys.stderr.write("GBK 映射表: %d 项\n" % len(gbk_items))
+    finally:
+        # 把标准输出还回去：先 flush 新包装器（它写的是 saved_stdout 的 buffer），
+        # 恢复后再由解释器退出时统一 flush，避免缓冲顺序问题。
+        sys.stdout.flush()
+        if saved_stdout is not None:
+            sys.stdout = saved_stdout
+
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()

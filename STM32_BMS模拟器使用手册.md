@@ -890,6 +890,20 @@ python tools/to_gbk.py --check    # 只检查，不改动
 python tools/to_gbk.py --to-utf8  # 改中文之前先转成 UTF-8
 ```
 
+前两条会改动文件，`--check` 只看不动。**`--check` 现在返回 1**：`User/Ui/font16.h` 是纯 LF（552 行），
+是 `gen_font.py` 改成 CRLF 输出之前生成的那一份，也是 `to_gbk.py` 覆盖的 12 个文件里唯一的例外
+（其余 11 个都报 `CRLF=n LF=0`）。要让 `--check` 返回 0，两种方式都可以，改的东西不同：
+
+- **只改行尾（不动字模）**：`python tools/to_gbk.py`。`User/Ui/font16.h` 就在它覆盖的 12 个文件名单里，
+  默认方向是 UTF-8 -> GBK + CRLF；该文件已是 GBK，因此只有这 552 行 LF 被换成 CRLF，字符数据一字不改。
+  不需要 Linux，也不需要字体。
+- **重新生成字库内容**：本节开头那条 `python3 tools/gen_font.py --profile stm32 --out-encoding gbk >
+  User/Ui/font16.h`。`gen_font.py` 现在输出 CRLF，所以重新生成的这一份行尾也是 CRLF，但**字模内容**
+  会按当前脚本与字体重新渲染，需要一台装了 Noto / DejaVu 字体的 Linux。
+
+行尾与字模内容是两件事：前者只影响 `--check` 的换行判定，后者才决定屏上字形。`--check` 返回 1 不是
+编码统一失败，只是这份旧产物的行尾没跟上。
+
 字库缺字时，该字在屏上留空（`ui_port.c` 遇到字库中没有的字会推进一格但不画方块）。`UI_DYNAMIC_TEXT_STM32` 收全了 `BMS_ErrorStr()` 的全部 8 条文案（见上面第 2 步），"异常"一行不会缺字；字库覆盖的用字以 77 个汉字为限。
 
 STM32 端的 `User/Ui/font16.h` 是 GBK 编码、77 个汉字；Linux 端的 `linux_can_monitor/font16.h` 是另一份独立生成的字库，UTF-8 编码、498 个汉字（Linux 端没有 32 KB 额度压力，不裁剪）。两者由同一个脚本、同一种字体渲染，字形一致，但字表与编码不是同一份文件，改一边不影响另一边。
